@@ -1,0 +1,331 @@
+import java.io.IOException;
+import java.io.InterruptedIOException;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.UnknownHostException;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLException;
+
+import org.apache.http.Header;
+import org.apache.http.HttpEntity;
+import org.apache.http.HttpEntityEnclosingRequest;
+import org.apache.http.HttpRequest;
+import org.apache.http.HttpStatus;
+import org.apache.http.NameValuePair;
+import org.apache.http.StatusLine;
+import org.apache.http.client.HttpRequestRetryHandler;
+import org.apache.http.client.config.RequestConfig;
+import org.apache.http.client.entity.UrlEncodedFormEntity;
+import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpGet;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.client.methods.HttpRequestBase;
+import org.apache.http.client.protocol.HttpClientContext;
+import org.apache.http.client.utils.URIBuilder;
+import org.apache.http.config.Registry;
+import org.apache.http.config.RegistryBuilder;
+import org.apache.http.conn.ConnectTimeoutException;
+import org.apache.http.conn.socket.ConnectionSocketFactory;
+import org.apache.http.conn.socket.PlainConnectionSocketFactory;
+import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
+import org.apache.http.conn.ssl.SSLContexts;
+import org.apache.http.conn.ssl.TrustSelfSignedStrategy;
+import org.apache.http.entity.StringEntity;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.HttpClients;
+import org.apache.http.impl.conn.PoolingHttpClientConnectionManager;
+import org.apache.http.message.BasicNameValuePair;
+import org.apache.http.protocol.HttpContext;
+import org.apache.http.util.EntityUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.ktnet.ets.core.domain.ApiConfigBaseVO;
+
+
+
+public class HttpClientUtil {
+
+	protected Logger log = LoggerFactory.getLogger(HttpClientUtil.class);
+
+	public HttpClientUtil(){
+
+	}
+
+	/**
+	 * Send before.
+	 *
+	 * @param apiConfigBaseVO the api config base VO
+	 * @param isPost the is post
+	 * @throws Exception the exception
+	 */
+	private void sendBefore(ApiConfigBaseVO apiConfigBaseVO, boolean isPost) throws Exception {
+//		log.info(LOGGING_REQUEST_LINE, "Start");
+		log.info("[Request 정보]");
+		apiConfigBaseVO.setReqSystem("SERVER_SYSTEM_NAME");
+		apiConfigBaseVO.setReqServer("SERVER_SYSTEM_ID");
+		log.info("시스템명 : {}", "SERVER_SYSTEM_NAME");
+		log.info("서버ID : {}", "SERVER_SYSTEM_ID");
+
+		int timeout = apiConfigBaseVO.getTimeout();
+		RequestConfig requestConfig = RequestConfig.custom()
+				.setSocketTimeout(timeout)
+			    .setConnectTimeout(timeout)
+			    .setConnectionRequestTimeout(timeout)
+			    .setStaleConnectionCheckEnabled(true)
+			    .build();
+		apiConfigBaseVO.setRequestConfig(requestConfig);
+
+		URI uri = apiConfigBaseVO.getUri();
+		URIBuilder uriBuilder = null;
+		if(uri == null) {
+			String url = apiConfigBaseVO.getUrl();
+			if(url == null) {
+				url = "";
+			}
+			uriBuilder = new URIBuilder(apiConfigBaseVO.getHost() + url);
+			if(apiConfigBaseVO.getPort() > 0) {
+				uriBuilder.setPort(apiConfigBaseVO.getPort());
+			}
+			uri = uriBuilder.build();
+			apiConfigBaseVO.setUri(uri);
+		}
+
+		HttpRequestBase httpRequest = apiConfigBaseVO.getHttpRequest();
+
+		if(httpRequest == null){
+			if(isPost) {
+				httpRequest = new HttpPost(uri);
+			} else {
+				httpRequest = new HttpGet(uri);
+			}
+			apiConfigBaseVO.setHttpRequest(httpRequest);
+		}
+
+		Map reqHeaderBox = apiConfigBaseVO.getHeader();
+		if(reqHeaderBox != null) {
+			Iterator<String> iter = reqHeaderBox.keySet().iterator();
+			String key, value;
+			while(iter.hasNext()) {
+				key = iter.next();
+				value = (String)reqHeaderBox.get(key);
+				httpRequest.setHeader(key, value);
+			}
+		}
+
+		HttpEntity httpEntity = null;
+		Map paramBox = apiConfigBaseVO.getParam();
+		String body = apiConfigBaseVO.getBody();
+//		StringBuffer paramBuffer = new StringBuffer();
+		if(!isPost || (isPost && body != null)) {
+			if(isPost) {
+				httpEntity = new StringEntity(body, "UTF-8");
+			}
+			if(paramBox != null) {
+				uriBuilder = new URIBuilder(uri);
+				Iterator<String> paramIter = paramBox.keySet().iterator();
+				String key, value;
+				while(paramIter.hasNext()) {
+					key = paramIter.next();
+					value = URLEncoder.encode((String)paramBox.get(key), "UTF-8");
+					uriBuilder.setParameter(key, value);
+//					paramBuffer.append(key).append(":").append(value).append("\n");
+				}
+				httpRequest.setURI(uriBuilder.build());
+			}
+		} else {
+			if(paramBox != null) {
+				List<NameValuePair> paramList = new ArrayList<NameValuePair>();
+				Iterator<String> paramIter = paramBox.keySet().iterator();
+				String key, value;
+				while(paramIter.hasNext()) {
+					key = paramIter.next();
+					value = (String)paramBox.get(key);
+					paramList.add(new BasicNameValuePair(key, value));
+//					paramBuffer.append(key).append(":").append(value).append("\n");
+				}
+				httpEntity = new UrlEncodedFormEntity(paramList, "UTF-8");
+			}
+		}
+
+		/*
+		String paramStr = null;
+		String paramBufferStr = paramBuffer.toString();
+		if(StringUtil.isNotEmpty(paramBufferStr)) {
+			paramStr = paramBufferStr.substring(0, paramBufferStr.length()-1);
+		}
+		*/
+
+//		Map<String, Object> headerMap = HttpUtil.getHeaderToMap(httpRequest.getAllHeaders());
+		log.info("URL :  {}", uri.toString());
+//		log.info("Header : {}", headerMap);
+		log.info("Parameter : {}", paramBox);
+		log.info("Body : {}", body);
+
+		if(httpEntity != null) {
+			((HttpPost)httpRequest).setEntity(httpEntity);
+		}
+
+//		clientApiLogService.insertHttpReqApiLog(apiConfigBaseVO, headerMap);
+//		log.info(LOGGING_REQUEST_LINE, "End");
+	}
+
+	public ApiConfigBaseVO sendPost(ApiConfigBaseVO apiConfigBaseVO) throws Exception {
+		CloseableHttpClient httpClient = null;
+		CloseableHttpResponse response = null;
+		try {
+			sendBefore(apiConfigBaseVO, true);
+			httpClient = HttpClients.custom()
+					.setDefaultRequestConfig(apiConfigBaseVO.getRequestConfig())
+					.setRetryHandler(getRetryHandler())
+					.build();
+			response = httpClient.execute(apiConfigBaseVO.getHttpRequest());
+			sendAfter(apiConfigBaseVO, response);
+		} catch (Exception e) {
+			apiConfigBaseVO.setException(e);
+			throw e;
+		} finally {
+//			clientApiLogService.updateHttpReqApiLog(apiConfigBaseVO);
+			if(response != null) {
+				response.close();
+			}
+			if(httpClient != null) {
+				httpClient.close();
+			}
+		}
+		return apiConfigBaseVO;
+	}
+
+	public ApiConfigBaseVO sendSSL(ApiConfigBaseVO apiConfigBaseVO) throws Exception {
+		CloseableHttpClient httpClient = null;
+		CloseableHttpResponse response = null;
+		try {
+//			KeyStore keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
+			sendBefore(apiConfigBaseVO, true);
+
+			SSLContext sslcontext = SSLContexts.custom()
+					.useSSL()
+					.loadTrustMaterial(null, new TrustSelfSignedStrategy())
+//					.loadTrustMaterial(null, new TrustStrategy() {
+//						@Override
+//						public boolean isTrusted(
+//								java.security.cert.X509Certificate[] paramArrayOfX509Certificate,
+//								String paramString)
+//								throws java.security.cert.CertificateException {
+//							return true;
+//						}
+//					})
+	                .build();
+
+			SSLConnectionSocketFactory sslsf = new SSLConnectionSocketFactory(sslcontext, SSLConnectionSocketFactory.ALLOW_ALL_HOSTNAME_VERIFIER);
+
+
+			Registry<ConnectionSocketFactory> registry = RegistryBuilder.<ConnectionSocketFactory>create()
+	                .register("http", new PlainConnectionSocketFactory())
+	                .register("https", sslsf)
+	                .build();
+			PoolingHttpClientConnectionManager cm = new PoolingHttpClientConnectionManager(registry);
+	        cm.setMaxTotal(2000);
+
+
+			httpClient = HttpClients.custom()
+					.setDefaultRequestConfig(apiConfigBaseVO.getRequestConfig())
+	                .setSSLSocketFactory(sslsf)
+	                .setRetryHandler(getRetryHandler())
+	                .setConnectionManager(cm)
+	                .build();
+			response = httpClient.execute(apiConfigBaseVO.getHttpRequest());
+			sendAfter(apiConfigBaseVO, response);
+		} catch (Exception e) {
+			apiConfigBaseVO.setException(e);
+			throw e;
+		} finally {
+			if(response != null) {
+				response.close();
+			}
+			if(httpClient != null) {
+				httpClient.close();
+			}
+		}
+		return apiConfigBaseVO;
+	}
+
+	private  HttpRequestRetryHandler getRetryHandler() {
+		HttpRequestRetryHandler myRetryHandler = new HttpRequestRetryHandler() {
+		    public boolean retryRequest(
+		            IOException exception,
+		            int executionCount,
+		            HttpContext context) {
+		        if (executionCount >= 1) {
+		            return false;
+		        }
+		        if (exception instanceof InterruptedIOException) {
+		            return false;
+		        }
+		        if (exception instanceof UnknownHostException) {
+		            return false;
+		        }
+		        if (exception instanceof ConnectTimeoutException) {
+		            return false;
+		        }
+		        if (exception instanceof SSLException) {
+		            return false;
+		        }
+		        /*
+		        if (exception instanceof NoHttpResponseException) {
+		        	return false;
+		        }
+		        */
+		        HttpClientContext clientContext = HttpClientContext.adapt(context);
+		        HttpRequest request = clientContext.getRequest();
+		        boolean idempotent = !(request instanceof HttpEntityEnclosingRequest);
+		        if (idempotent) {
+		            return true;
+		        }
+		        return false;
+		    }
+		};
+		return myRetryHandler;
+	}
+
+
+	private void sendAfter(ApiConfigBaseVO apiConfigBaseVO, CloseableHttpResponse response) throws Exception {
+		log.info("LOGGING_RESPONSE_LINE", "Start");
+		log.info("[Response 정보]");
+		log.info("시스템명 : {}", apiConfigBaseVO.getResSystem());
+		// log.info("서버ID : {}", apiConfigBaseVO.getResServer());
+
+		apiConfigBaseVO.setHttpResponse(response);
+		StatusLine responseStatusLine = response.getStatusLine();
+		apiConfigBaseVO.setResponseStatus(responseStatusLine);
+//		log.info("Status : {}", responseStatusLine);
+
+		Header[] headers = response.getAllHeaders();
+		apiConfigBaseVO.setResHeaders(headers);
+//		log.info("Header : {}", HttpUtil.getHeaderToJson(headers));
+
+		if(responseStatusLine.getStatusCode() == HttpStatus.SC_OK || responseStatusLine.getStatusCode() == HttpStatus.SC_INTERNAL_SERVER_ERROR ) {
+			HttpEntity httpEntity = null;
+			try {
+				httpEntity = response.getEntity();
+				String resData = null;
+				if(httpEntity != null) {
+					resData = EntityUtils.toString(httpEntity, "UTF-8");
+					apiConfigBaseVO.setResData(resData);
+//					log.info("{}", resData);
+				}
+			} finally {
+				EntityUtils.consume(httpEntity);
+			}
+		} else {
+			throw new Exception(responseStatusLine.toString());
+		}
+		log.info("LOGGING_RESPONSE_LINE", "End");
+	}
+
+}
